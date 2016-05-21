@@ -30,7 +30,6 @@
 #include <linux/fb.h>
 #include <linux/msm_mdp.h>
 #include <linux/file.h>
-#include <linux/android_pmem.h>
 #include <linux/major.h>
 #include <asm/system.h>
 #include <asm/mach-types.h>
@@ -149,9 +148,9 @@ static int mdp4_map_sec_resource(struct msm_fb_data_type *mfd)
 		return -ENODEV;
 	}
 
-	pr_debug("%s %d mfd->index=%d,mapped=%d,active=%d\n",
+	pr_debug("%s %d mfd->index=%d,mapped=%d\n",
 		__func__, __LINE__,
-		 mfd->index, mfd->sec_mapped, mfd->sec_active);
+		 mfd->index, mfd->sec_mapped);
 
 	if (mfd->sec_mapped)
 		return 0;
@@ -174,18 +173,31 @@ static int mdp4_map_sec_resource(struct msm_fb_data_type *mfd)
 int mdp4_unmap_sec_resource(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
+	int i, sec_cnt = 0;
+	struct mdp4_overlay_pipe *pipe;
+
 
 	if (!mfd) {
 		pr_err("%s: mfd is invalid\n", __func__);
 		return -ENODEV;
 	}
 
-	if ((mfd->sec_mapped == 0) || (mfd->sec_active))
+	if (mfd->sec_mapped == 0)
 		return 0;
 
-	pr_debug("%s %d mfd->index=%d,mapped=%d,active=%d\n",
+	for (i = 0; i < OVERLAY_PIPE_MAX; i++) {
+		pipe = &ctrl->plist[i];
+		if ((pipe->mixer_num == mfd->index) &&
+				pipe->flags & MDP_SECURE_OVERLAY_SESSION)
+			sec_cnt++;
+	}
+
+	if (sec_cnt)
+		return 0;
+
+	pr_debug("%s %d mfd->index=%d,mapped=%d\n",
 		__func__, __LINE__,
-		 mfd->index, mfd->sec_mapped, mfd->sec_active);
+		 mfd->index, mfd->sec_mapped);
 
 	ret = mdp_enable_iommu_clocks();
 	if (ret) {
@@ -768,35 +780,41 @@ static void mdp4_scale_setup(struct mdp4_overlay_pipe *pipe)
 void mdp4_overlay_solidfill_init(struct mdp4_overlay_pipe *pipe)
 {
 	char *base;
+	u32 off;
 	uint32 src_size, src_xy, dst_size, dst_xy;
 	uint32 format;
-	uint32 off;
-	int i;
+
+	if (!pipe)
+		return;
+
+	off = pipe->pipe_num * MDP4_VIDEO_OFF;
+	if (pipe->pipe_type == OVERLAY_TYPE_RGB)
+		base = MDP_BASE + MDP4_RGB_BASE + off;
+	else if (pipe->pipe_type == OVERLAY_TYPE_VIDEO)
+		base = MDP_BASE + MDP4_VIDEO_BASE + off;
+	else
+		base = NULL;
+
+	if (!base)
+		return;
 
 	src_size = ((pipe->src_h << 16) | pipe->src_w);
 	src_xy = ((pipe->src_y << 16) | pipe->src_x);
 	dst_size = ((pipe->dst_h << 16) | pipe->dst_w);
 	dst_xy = ((pipe->dst_y << 16) | pipe->dst_x);
 
-	base = MDP_BASE + MDP4_VIDEO_BASE;
-	off = MDP4_VIDEO_OFF;	/* 0x10000 */
 	mdp_clk_ctrl(1);
-	for(i = 0; i < 4; i++) {	/* 4 pipes */
-		format = inpdw(base + 0x50);
-		format |= MDP4_FORMAT_SOLID_FILL;
-		outpdw(base + 0x0000, src_size);/* MDP_RGB_SRC_SIZE */
-		outpdw(base + 0x0004, src_xy);	/* MDP_RGB_SRC_XY */
-		outpdw(base + 0x0008, dst_size);/* MDP_RGB_DST_SIZE */
-		outpdw(base + 0x000c, dst_xy);	/* MDP_RGB_DST_XY */
-		outpdw(base + 0x0050, format);/* MDP_RGB_SRC_FORMAT */
-		outpdw(base + 0x1008, 0x0);/* Black */
-		base += off;
-	}
-	/*
-	 * keep it at primary
-	 * will be picked up at first commit
-	 */
-	ctrl->flush[MDP4_MIXER0] = 0x3c; /* all pipes */
+
+	format = inpdw(base + 0x50);
+	format |= MDP4_FORMAT_SOLID_FILL;
+	outpdw(base + 0x0000, src_size);/* MDP_RGB_SRC_SIZE */
+	outpdw(base + 0x0004, src_xy);	/* MDP_RGB_SRC_XY */
+	outpdw(base + 0x0008, dst_size);/* MDP_RGB_DST_SIZE */
+	outpdw(base + 0x000c, dst_xy);	/* MDP_RGB_DST_XY */
+	outpdw(base + 0x0050, format);/* MDP_RGB_SRC_FORMAT */
+	outpdw(base + 0x1008, 0x0);/* Black */
+
+	mdp4_overlay_reg_flush(pipe, 0);
 	mdp_clk_ctrl(0);
 }
 
@@ -2746,11 +2764,6 @@ static int mdp4_overlay_req2pipe(struct mdp_overlay *req, int mixer,
 
 	pipe->transp = req->transp_mask;
 
-	if ((pipe->flags & MDP_SECURE_OVERLAY_SESSION) &&
-		(!(req->flags & MDP_SECURE_OVERLAY_SESSION))) {
-		pr_err("%s Switch secure %d", __func__, pipe->pipe_ndx);
-		mfd->sec_active = FALSE;
-	}
 	pipe->flags = req->flags;
 
 	*ppipe = pipe;
@@ -3394,9 +3407,6 @@ static int get_img(struct msmfb_data *img, struct fb_info *info,
 {
 	struct file *file;
 	int put_needed, ret = 0, fb_num;
-#ifdef CONFIG_ANDROID_PMEM
-	unsigned long vstart;
-#endif
 	*p_need = 0;
 
 	if (img->flags & MDP_BLIT_SRC_GEM) {
@@ -3427,17 +3437,8 @@ static int get_img(struct msmfb_data *img, struct fb_info *info,
 		return ret;
 	}
 
-#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	return mdp4_overlay_iommu_map_buf(img->memory_id, pipe, plane,
 		start, len, srcp_ihdl);
-#endif
-#ifdef CONFIG_ANDROID_PMEM
-	if (!get_pmem_file(img->memory_id, start, &vstart,
-					    len, srcp_file))
-		return 0;
-	else
-		return -EINVAL;
-#endif
 }
 
 #ifdef CONFIG_FB_MSM_MIPI_DSI
@@ -3551,7 +3552,6 @@ int mdp4_overlay_set(struct fb_info *info, struct mdp_overlay *req)
 
 	if (pipe->flags & MDP_SECURE_OVERLAY_SESSION) {
 		mdp4_map_sec_resource(mfd);
-		mfd->sec_active = TRUE;
 	}
 
 	/* return id back to user */
@@ -3667,8 +3667,6 @@ int mdp4_overlay_unset(struct fb_info *info, int ndx)
 
 	mdp4_stat.overlay_unset[pipe->mixer_num]++;
 
-	if (pipe->flags & MDP_SECURE_OVERLAY_SESSION)
-		mfd->sec_active = FALSE;
 	mdp4_overlay_pipe_free(pipe, 0);
 
 	mutex_unlock(&mfd->dma->ov_mutex);

@@ -233,27 +233,10 @@ static int pm8xxx_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 {
 	int rc, i;
 	u8 value[NUM_8_BIT_RTC_REGS], ctrl_reg;
-	unsigned long secs, secs_rtc, irq_flags;
+	unsigned long secs, irq_flags;
 	struct pm8xxx_rtc *rtc_dd = dev_get_drvdata(dev);
-	struct rtc_time rtc_tm;
 
 	rtc_tm_to_time(&alarm->time, &secs);
-
-	/*
-	 * Read the current RTC time and verify if the alarm time is in the
-	 * past. If yes, return invalid.
-	 */
-	rc = pm8xxx_rtc_read_time(dev, &rtc_tm);
-	if (rc < 0) {
-		dev_err(dev, "Unable to read RTC time\n");
-		return -EINVAL;
-	}
-
-	rtc_tm_to_time(&rtc_tm, &secs_rtc);
-	if (secs < secs_rtc) {
-		dev_err(dev, "Trying to set alarm in the past\n");
-		return -EINVAL;
-	}
 
 	for (i = 0; i < NUM_8_BIT_RTC_REGS; i++) {
 		value[i] = secs & 0xFF;

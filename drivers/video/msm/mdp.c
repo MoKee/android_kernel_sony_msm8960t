@@ -2,7 +2,7 @@
  *
  * MSM MDP Interface (used by framebuffer core)
  *
- * Copyright (c) 2007-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2007-2014, 2016 The Linux Foundation. All rights reserved.
  * Copyright (C) 2007 Google Incorporated
  * Copyright (C) 2012 Sony Mobile Communications AB.
  *
@@ -387,7 +387,7 @@ static int mdp_hist_lut_write_off(struct mdp_hist_lut_data *data,
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
 	for (i = 0; i < MDP_HIST_LUT_SIZE; i++) {
 		last_lut[i] = element[i];
-		MDP_OUTP(MDP_BASE + base + offset + (0x400*(sel)) + (4*i),
+		MDP_OUTP((uint32_t)MDP_BASE + base + offset + (0x400*(sel)) + (4*i),
 				element[i]);
 	}
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
@@ -3523,7 +3523,7 @@ static int __init mdp_driver_init(void)
 		return ret;
 	}
 
-#if defined(CONFIG_DEBUG_FS)
+#if defined(CONFIG_MDP_DEBUG_FS)
 	mdp_debugfs_init();
 #endif
 

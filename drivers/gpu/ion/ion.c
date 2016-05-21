@@ -2,7 +2,7 @@
  * drivers/gpu/ion/ion.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, 2016, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -35,6 +35,8 @@
 #include <linux/debugfs.h>
 #include <linux/dma-buf.h>
 #include <linux/msm_ion.h>
+#include <trace/events/kmem.h>
+
 
 #include <mach/iommu_domains.h>
 #include "ion_priv.h"
@@ -303,7 +305,7 @@ static struct ion_handle *ion_handle_create(struct ion_client *client,
 	if (!handle)
 		return ERR_PTR(-ENOMEM);
 	kref_init(&handle->ref);
-	rb_init_node(&handle->node);
+	RB_CLEAR_NODE(&handle->node);
 	handle->client = client;
 	ion_buffer_get(buffer);
 	handle->buffer = buffer;
@@ -438,9 +440,16 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 		if (secure_allocation &&
 			(heap->type != (enum ion_heap_type) ION_HEAP_TYPE_CP))
 			continue;
+		trace_ion_alloc_buffer_start(client->name, heap->name, len,
+					     heap_mask, flags);
 		buffer = ion_buffer_create(heap, dev, len, align, flags);
+		trace_ion_alloc_buffer_end(client->name, heap->name, len,
+					   heap_mask, flags);
 		if (!IS_ERR_OR_NULL(buffer))
 			break;
+
+		trace_ion_alloc_buffer_fallback(client->name, heap->name, len,
+					    heap_mask, flags, PTR_ERR(buffer));
 		if (dbg_str_idx < MAX_DBG_STR_LEN) {
 			unsigned int len_left = MAX_DBG_STR_LEN-dbg_str_idx-1;
 			int ret_value = snprintf(&dbg_str[dbg_str_idx],
@@ -459,10 +468,15 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 	}
 	up_read(&dev->lock);
 
-	if (buffer == NULL)
+	if (buffer == NULL) {
+		trace_ion_alloc_buffer_fail(client->name, dbg_str, len,
+					    heap_mask, flags, -ENODEV);
 		return ERR_PTR(-ENODEV);
+	}
 
 	if (IS_ERR(buffer)) {
+		trace_ion_alloc_buffer_fail(client->name, dbg_str, len,
+					    heap_mask, flags, PTR_ERR(buffer));
 		pr_debug("ION is unable to allocate 0x%x bytes (alignment: "
 			 "0x%x) from heap(s) %sfor client %s with heap "
 			 "mask 0x%x\n",
@@ -607,8 +621,10 @@ static struct ion_iommu_map *__ion_iommu_map(struct ion_buffer *buffer,
 						iova_length,
 						flags);
 
-	if (ret)
+	if (ret) {
+		pr_err("%s,%d map_iommu failed=%d\n", __func__, __LINE__, ret);
 		goto out;
+	}
 
 	kref_init(&data->ref);
 	*iova = data->iova_addr;
@@ -631,6 +647,19 @@ int ion_map_iommu(struct ion_client *client, struct ion_handle *handle,
 	struct ion_buffer *buffer;
 	struct ion_iommu_map *iommu_map;
 	int ret = 0;
+
+	if (IS_ERR_OR_NULL(client)) {
+		pr_err("%s: client pointer is invalid\n", __func__);
+		return -EINVAL;
+	}
+	if (IS_ERR_OR_NULL(handle)) {
+		pr_err("%s: handle pointer is invalid\n", __func__);
+		return -EINVAL;
+	}
+	if (IS_ERR_OR_NULL(handle->buffer)) {
+		pr_err("%s: buffer pointer is invalid\n", __func__);
+		return -EINVAL;
+	}
 
 	if (ION_IS_CACHED(flags)) {
 		pr_err("%s: Cannot map iommu as cached.\n", __func__);
@@ -663,21 +692,21 @@ int ion_map_iommu(struct ion_client *client, struct ion_handle *handle,
 		iova_length = buffer->size;
 
 	if (buffer->size > iova_length) {
-		pr_debug("%s: iova length %lx is not at least buffer size"
+		pr_err("%s: iova length %lx is not at least buffer size"
 			" %x\n", __func__, iova_length, buffer->size);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	if (buffer->size & ~PAGE_MASK) {
-		pr_debug("%s: buffer size %x is not aligned to %lx", __func__,
+		pr_err("%s: buffer size %x is not aligned to %lx", __func__,
 			buffer->size, PAGE_SIZE);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	if (iova_length & ~PAGE_MASK) {
-		pr_debug("%s: iova_length %lx is not aligned to %lx", __func__,
+		pr_err("%s: iova_length %lx is not aligned to %lx", __func__,
 			iova_length, PAGE_SIZE);
 		ret = -EINVAL;
 		goto out;
@@ -692,6 +721,10 @@ int ion_map_iommu(struct ion_client *client, struct ion_handle *handle,
 
 			if (iommu_map->flags & ION_IOMMU_UNMAP_DELAYED)
 				kref_get(&iommu_map->ref);
+		} else {
+			ret = PTR_ERR(iommu_map);
+			pr_err("%s: __ion_iommu_map failed=%d, length %lx\n",
+				__func__, ret, iova_length);
 		}
 	} else {
 		if (iommu_map->flags != iommu_flags) {
@@ -736,6 +769,19 @@ void ion_unmap_iommu(struct ion_client *client, struct ion_handle *handle,
 {
 	struct ion_iommu_map *iommu_map;
 	struct ion_buffer *buffer;
+
+	if (IS_ERR_OR_NULL(client)) {
+		pr_err("%s: client pointer is invalid\n", __func__);
+		return;
+	}
+	if (IS_ERR_OR_NULL(handle)) {
+		pr_err("%s: handle pointer is invalid\n", __func__);
+		return;
+	}
+	if (IS_ERR_OR_NULL(handle->buffer)) {
+		pr_err("%s: buffer pointer is invalid\n", __func__);
+		return;
+	}
 
 	mutex_lock(&client->lock);
 	buffer = handle->buffer;

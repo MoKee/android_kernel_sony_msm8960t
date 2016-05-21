@@ -34,7 +34,6 @@ config ARCH_MSM7X27
 	select MULTI_IRQ_HANDLER
 	select MSM_PROC_COMM_REGULATOR
 	select CLEANCACHE
-	select QCACHE
 	select MSM_PM2 if PM
 	select MSM_RUN_QUEUE_STATS if MSM_SOC_REV_A
 	select DONT_MAP_HOLE_AFTER_MEMBANK0
@@ -162,7 +161,6 @@ config ARCH_MSM8960
 	select ARCH_SPARSEMEM_ENABLE
 	select ARCH_HAS_HOLES_MEMORYMODEL
 	select CLEANCACHE
-	select QCACHE
 	select MSM_MULTIMEDIA_USE_ION
 	select MULTI_IRQ_HANDLER
 	select MSM_PM8X60 if PM
@@ -237,7 +235,6 @@ config ARCH_APQ8064
 	select CPU_HAS_L2_PMU
 	select HOLES_IN_ZONE if SPARSEMEM
 	select CLEANCACHE
-	select QCACHE
 	select MIGHT_HAVE_PCI
 	select ARCH_SUPPORTS_MSI
 	select ARM_HAS_SG_CHAIN
@@ -274,6 +271,7 @@ config ARCH_MSM8974
 	select MSM_RPM_REGULATOR_SMD
 	select ARM_HAS_SG_CHAIN
 	select MSM_RUN_QUEUE_STATS
+	select DONT_MAP_HOLE_AFTER_MEMBANK0
 
 config ARCH_MPQ8092
 	bool "MPQ8092"
@@ -2020,16 +2018,6 @@ config SCORPION_Uni_45nm_BUG
 	  workaround for Scorpion Uniprocessor 45nm cores.
 
 	  This bug is not applicable to any ScorpionMP or Scorpion Uni 65nm(SC65U) cores.
-
-config MSM_BUSPM_DEV
-	tristate "MSM Bus Performance Monitor Kernel Module"
-	depends on (ARCH_MSM8X60 || ARCH_MSM8960)
-	default m
-	help
-	  This kernel module is used to mmap() hardware registers for the
-	  performance monitors, counters, etc. The module can also be used to
-	  allocate physical memory which is used by bus performance hardware to
-	  dump performance data.
 
 config MSM_TZ_LOG
 	tristate "MSM Trust Zone (TZ) Log Driver"

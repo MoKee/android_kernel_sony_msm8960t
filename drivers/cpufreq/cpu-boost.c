@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/notifier.h>
 #include <linux/cpufreq.h>
+#include <linux/cpu.h>
 #include <linux/sched.h>
 #include <linux/jiffies.h>
 #include <linux/kthread.h>
@@ -139,7 +140,7 @@ static int boost_mig_sync_thread(void *data)
 	struct cpufreq_policy src_policy;
 	unsigned long flags;
 
-	while(1) {
+	while (1) {
 		wait_event_interruptible(s->sync_wq, s->pending ||
 					kthread_should_stop());
 
@@ -159,14 +160,11 @@ static int boost_mig_sync_thread(void *data)
 		if (ret)
 			continue;
 
-		if (dest_policy.cur >= src_policy.cur ) {
-			pr_debug("No sync. CPU%d@%dKHz >= CPU%d@%dKHz\n",
-				 dest_cpu, dest_policy.cur, src_cpu, src_policy.cur);
+		if (src_policy.cur == src_policy.cpuinfo.min_freq) {
+			pr_debug("No sync. Source CPU%d@%dKHz at min freq\n",
+				 src_cpu, src_policy.cur);
 			continue;
 		}
-
-		if (sync_threshold && (dest_policy.cur >= sync_threshold))
-			continue;
 
 		cancel_delayed_work_sync(&s->boost_rem);
 		if (sync_threshold) {
@@ -178,9 +176,15 @@ static int boost_mig_sync_thread(void *data)
 			s->boost_min = src_policy.cur;
 		}
 		/* Force policy re-evaluation to trigger adjust notifier. */
-		cpufreq_update_policy(dest_cpu);
-		queue_delayed_work_on(s->cpu, cpu_boost_wq,
-			&s->boost_rem, msecs_to_jiffies(boost_ms));
+		get_online_cpus();
+		if (cpu_online(dest_cpu)) {
+			cpufreq_update_policy(dest_cpu);
+			queue_delayed_work_on(dest_cpu, cpu_boost_wq,
+				&s->boost_rem, msecs_to_jiffies(boost_ms));
+		} else {
+			s->boost_min = 0;
+		}
+		put_online_cpus();
 	}
 
 	return 0;
@@ -193,6 +197,10 @@ static int boost_migration_notify(struct notifier_block *nb,
 	struct cpu_sync *s = &per_cpu(sync_info, dest_cpu);
 
 	if (!boost_ms)
+		return NOTIFY_OK;
+
+	/* Avoid deadlock in try_to_wake_up() */
+	if (s->thread == current)
 		return NOTIFY_OK;
 
 	pr_debug("Migration: CPU%d --> CPU%d\n", (int) arg, (int) dest_cpu);
@@ -224,6 +232,7 @@ static void do_input_boost(struct work_struct *work)
 	struct cpu_sync *i_sync_info;
 	struct cpufreq_policy policy;
 
+	get_online_cpus();
 	for_each_online_cpu(i) {
 
 		i_sync_info = &per_cpu(sync_info, i);
@@ -240,6 +249,7 @@ static void do_input_boost(struct work_struct *work)
 			&i_sync_info->input_boost_rem,
 			msecs_to_jiffies(input_boost_ms));
 	}
+	put_online_cpus();
 }
 
 static void cpuboost_input_event(struct input_handle *handle,

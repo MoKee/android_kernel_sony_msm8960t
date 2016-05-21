@@ -30,9 +30,6 @@
 #define KGSL_TIMEOUT_PART           50 /* 50 msec */
 #define KGSL_TIMEOUT_LONG_IB_DETECTION  2000 /* 2 sec*/
 
-#define FIRST_TIMEOUT (HZ / 2)
-
-
 /* KGSL device state is initialized to INIT when platform_probe		*
  * sucessfully initialized the device.  Once a device has been opened	*
  * (started) it becomes active.  NAP implies that only low latency	*
@@ -91,7 +88,7 @@ struct kgsl_functable {
 	bool (*isidle) (struct kgsl_device *device);
 	int (*suspend_context) (struct kgsl_device *device);
 	int (*init) (struct kgsl_device *device);
-	int (*start) (struct kgsl_device *device);
+	int (*start) (struct kgsl_device *device, int priority);
 	int (*stop) (struct kgsl_device *device);
 	int (*getproperty) (struct kgsl_device *device,
 		enum kgsl_property_type type, void *value,
